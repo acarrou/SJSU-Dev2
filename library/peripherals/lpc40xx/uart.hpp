@@ -4,11 +4,11 @@
 #include <cstdint>
 #include <limits>
 
-#include "platforms/targets/lpc17xx/LPC17xx.h"
-#include "platforms/targets/lpc40xx/LPC40xx.h"
 #include "peripherals/lpc40xx/pin.hpp"
 #include "peripherals/lpc40xx/system_controller.hpp"
 #include "peripherals/uart.hpp"
+#include "platforms/targets/lpc17xx/LPC17xx.h"
+#include "platforms/targets/lpc40xx/LPC40xx.h"
 #include "utility/error_handling.hpp"
 #include "utility/time/time.hpp"
 
@@ -18,192 +18,6 @@ namespace sjsu
 {
 namespace lpc40xx
 {
-namespace uart
-{
-/// UART baud error threshold. Used to check if a fractional value is reasonable
-/// close to the desired value.
-constexpr float kThreshold = 0.01f;
-/// Structure containing all of the information that a lpc40xx UART needs to
-/// achieve its desired baud rate.
-struct UartCalibration_t
-{
-  /// Main clock divider
-  uint32_t divide_latch = 0;
-  /// Fractional divisor to trim the UART baud rate into the proper rate
-  uint32_t divide_add = 0;
-  /// Fractional numerator to trim the UART baud rate into the proper rate.
-  uint32_t multiply = 1;
-};
-/// @param decimal - the number to approximate.
-/// @return Will generate a UartCalibration_t that attempts to find a fractional
-/// value that closely matches the input decimal number as much as possible.
-constexpr UartCalibration_t FindClosestFractional(float decimal)
-{
-  UartCalibration_t result;
-  bool finished = false;
-  for (int div = 0; div < 15 && !finished; div++)
-  {
-    for (int mul = div + 1; mul < 15 && !finished; mul++)
-    {
-      float divf         = static_cast<float>(div);
-      float mulf         = static_cast<float>(mul);
-      float test_decimal = 1.0f + divf / mulf;
-      if (decimal <= test_decimal + kThreshold &&
-          decimal >= test_decimal - kThreshold)
-      {
-        result.divide_add = div;
-        result.multiply   = mul;
-        finished          = true;
-      }
-    }
-  }
-  return result;
-}
-/// @param baud_rate - desired baud rate.
-/// @param fraction_estimate - corrissponds to the result of UartCalibration_t
-///        divide_add/multiply.
-/// @param peripheral_frequency - input source frequency.
-/// @return an estimate for the baud rate divider
-constexpr float DividerEstimate(float baud_rate,
-                                float fraction_estimate       = 1,
-                                uint32_t peripheral_frequency = 1)
-{
-  float clock_frequency = static_cast<float>(peripheral_frequency);
-  return clock_frequency / (16.0f * baud_rate * fraction_estimate);
-}
-/// @param baud_rate - desired baud rate.
-/// @param divider - clock divider for the baud rate.
-/// @param peripheral_frequency - input source frequency.
-/// @return a fraction that would get the baud rate as close to desired baud
-///         rate, given the input divider.
-constexpr float FractionalEstimate(float baud_rate,
-                                   float divider,
-                                   uint32_t peripheral_frequency)
-{
-  float clock_frequency = static_cast<float>(peripheral_frequency);
-  return clock_frequency / (16.0f * baud_rate * divider);
-}
-/// @param value - value to round
-/// @return rounded up and truncated value
-constexpr float RoundFloat(float value)
-{
-  return static_cast<float>(static_cast<int>(value + 0.5f));
-}
-/// @param value input float value.
-/// @return true if value is within our threshold of a decimal number, false
-///         otherwise.
-constexpr bool IsDecimal(float value)
-{
-  bool result         = false;
-  float rounded_value = RoundFloat(value);
-  float error         = value - rounded_value;
-  if (-kThreshold <= error && error <= kThreshold)
-  {
-    result = true;
-  }
-  return result;
-}
-/// States for the uart calibration state machine.
-enum class States
-{
-  kCalculateIntegerDivideLatch,
-  kCalculateDivideLatchWithDecimal,
-  kDecimalFailedGenerateNewDecimal,
-  kGenerateFractionFromDecimal,
-  kDone
-};
-/// @param baud_rate - desire baud rate
-/// @param peripheral_frequency - input clock source frequency
-/// @return UartCalibration_t that will get the output baud rate as close to the
-///         desired baud_rate as possible.
-constexpr static UartCalibration_t GenerateUartCalibration(
-    uint32_t baud_rate,
-    units::frequency::hertz_t peripheral_frequency)
-{
-  uint32_t integer_peripheral_frequency =
-      units::unit_cast<uint32_t>(peripheral_frequency);
-  States state = States::kCalculateIntegerDivideLatch;
-  UartCalibration_t uart_calibration;
-  float baud_rate_float = static_cast<float>(baud_rate);
-  float divide_estimate = 0;
-  float decimal         = 1.5;
-  float div             = 1;
-  float mul             = 2;
-  while (state != States::kDone)
-  {
-    switch (state)
-    {
-      case States::kCalculateIntegerDivideLatch:
-      {
-        divide_estimate =
-            DividerEstimate(baud_rate_float, 1, integer_peripheral_frequency);
-
-        if (divide_estimate < 1.0f)
-        {
-          uart_calibration.divide_latch = 0;
-          state                         = States::kDone;
-        }
-        else if (IsDecimal(divide_estimate))
-        {
-          uart_calibration.divide_latch =
-              static_cast<uint32_t>(divide_estimate);
-          state = States::kDone;
-        }
-        else
-        {
-          state = States::kCalculateDivideLatchWithDecimal;
-        }
-        break;
-      }
-      case States::kCalculateDivideLatchWithDecimal:
-      {
-        divide_estimate = RoundFloat(DividerEstimate(
-            baud_rate_float, decimal, integer_peripheral_frequency));
-        decimal         = FractionalEstimate(
-            baud_rate_float, divide_estimate, integer_peripheral_frequency);
-        if (1.1f <= decimal && decimal <= 1.9f)
-        {
-          state = States::kGenerateFractionFromDecimal;
-        }
-        else
-        {
-          state = States::kDecimalFailedGenerateNewDecimal;
-        }
-        break;
-      }
-      case States::kDecimalFailedGenerateNewDecimal:
-      {
-        mul += 1;
-
-        if (div > 15)
-        {
-          state = States::kDone;
-          break;
-        }
-        else if (mul > 15)
-        {
-          div += 1;
-          mul = div + 1;
-        }
-        decimal = div / mul;
-        state   = States::kCalculateDivideLatchWithDecimal;
-        break;
-      }
-      case States::kGenerateFractionFromDecimal:
-      {
-        uart_calibration              = FindClosestFractional(decimal);
-        uart_calibration.divide_latch = static_cast<uint32_t>(divide_estimate);
-        state                         = States::kDone;
-        break;
-      }
-      case States::kDone:
-      default: break;
-    }
-  }
-  return uart_calibration;
-}
-}  // namespace uart
-
 /// Implementation of the UART peripheral for the LPC40xx family of
 /// microcontrollers.
 class Uart final : public sjsu::Uart
@@ -236,10 +50,10 @@ class Uart final : public sjsu::Uart
     sjsu::Pin & rx;
 
     /// Function code to set the transmit pin to uart transmitter
-    uint8_t tx_function_id : 3;
+    uint8_t tx_function_id;
 
     /// Function code to set the receive pin to uart receiver
-    uint8_t rx_function_id : 3;
+    uint8_t rx_function_id;
   };
 
   /// @param port - a reference to a constant lpc40xx::Uart::Port_t definition
@@ -315,18 +129,13 @@ class Uart final : public sjsu::Uart
     auto & system             = sjsu::SystemController::GetPlatformController();
     auto peripheral_frequency = system.GetClockRate(port_.power_on_id);
 
-    uart::UartCalibration_t calibration =
-        uart::GenerateUartCalibration(settings.baud_rate, peripheral_frequency);
-
-    uint8_t dlm = static_cast<uint8_t>((calibration.divide_latch >> 8) & 0xFF);
-    uint8_t dll = static_cast<uint8_t>(calibration.divide_latch & 0xFF);
-    uint8_t fdr = static_cast<uint8_t>((calibration.multiply & 0xF) << 4 |
-                                       (calibration.divide_add & 0xF));
+    uint32_t divider = units::unit_cast<uint32_t>(peripheral_frequency /
+                                                  (16 * settings.baud_rate));
 
     port_.registers->LCR = kDlabBit;
-    port_.registers->DLM = dlm;
-    port_.registers->DLL = dll;
-    port_.registers->FDR = fdr;
+    port_.registers->DLM = (divider >> 8) & 0xFF;
+    port_.registers->DLL = (divider & 0xFF);
+    // port_.registers->FDR = 0b0001'0000;  // default
     port_.registers->LCR = kStandardUart;
   }
 

@@ -35,6 +35,7 @@ int main()
   else if constexpr (sjsu::build::kPlatform == sjsu::build::Platform::lpc40xx)
   {
     sjsu::LogInfo("Current Platform LPC40xx...");
+    sjsu::lpc40xx::SetMaximumClockSpeed();
     static auto & uart3 = sjsu::lpc40xx::GetUart<3>();
     uart                = &uart3;
   }
