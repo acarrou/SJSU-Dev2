@@ -2,10 +2,10 @@
 #include <cstdint>
 #include <string_view>
 
+#include "devices/communication/esp8266.hpp"
+#include "peripherals/interrupt.hpp"
 #include "peripherals/lpc40xx/uart.hpp"
 #include "peripherals/stm32f10x/uart.hpp"
-#include "peripherals/interrupt.hpp"
-#include "devices/communication/esp8266.hpp"
 #include "utility/debug.hpp"
 #include "utility/log.hpp"
 
@@ -59,7 +59,8 @@ int main()
   while (true)
   {
     sjsu::LogInfo("Connecting to WiFi...");
-    if (wifi.ConnectToAccessPoint("KAMMCE-PHONE", "roverteam", 10s))
+    // Replace the SSID and password with your access point's SSID and password.
+    if (wifi.ConnectToAccessPoint("ssid", "password", 10s))
     {
       break;
     }
@@ -68,6 +69,13 @@ int main()
   }
 
   sjsu::LogInfo("Connected to WiFi!!");
+  sjsu::LogInfo("Verifying the connection...");
+
+  if (wifi.IsConnected())
+  {
+    sjsu::LogInfo("Connection Verified!");
+  }
+
   sjsu::LogInfo("Connecting to server (%s)...", host.data());
 
   socket.Connect(sjsu::InternetSocket::Protocol::kTCP, host, 80, 5s);
